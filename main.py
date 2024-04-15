@@ -1,8 +1,8 @@
 import nextcord
 import asyncio
-
+import os
 import addition
-import config
+from dotenv import find_dotenv, load_dotenv
 
 
 class Democracy(nextcord.Client):
@@ -71,7 +71,7 @@ class Democracy(nextcord.Client):
         self.requests_threads[message.channel.id]['users'].add(message.author.id)
         self.requests_threads[message.channel.id]['count'] += 1
 
-        await message.add_reaction(config.approval_emoji)
+        await message.add_reaction(approval_emoji)
 
     async def proccess_requests(self,
                                 role_id: int,
@@ -96,11 +96,16 @@ class Democracy(nextcord.Client):
         self.requests_threads[thread_id] = {}
         for message in messages:
             self.requests_threads[thread_id][message.id] = {
-                                                               'request': message,
-                                                               'votes': 0
-                                                           }
+                'request': message,
+                'votes': 0
+            }
 
 
 if __name__ == '__main__':
+    load_dotenv(find_dotenv())
+
+    token = os.getenv('token')
+    approval_emoji = os.getenv('approval_emoji')
+
     bot = Democracy()
-    bot.run(config.token)
+    bot.run(token)
