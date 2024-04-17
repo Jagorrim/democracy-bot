@@ -1,8 +1,8 @@
 import nextcord
 import asyncio
-import os
 import addition
-from dotenv import find_dotenv, load_dotenv
+import config
+import pprint
 
 
 class Democracy(nextcord.Client):
@@ -71,7 +71,7 @@ class Democracy(nextcord.Client):
         self.requests_threads[message.channel.id]['users'].add(message.author.id)
         self.requests_threads[message.channel.id]['count'] += 1
 
-        await message.add_reaction(approval_emoji)
+        await message.add_reaction(config.approval_emoji)
 
     async def proccess_requests(self,
                                 role_id: int,
@@ -82,30 +82,30 @@ class Democracy(nextcord.Client):
                                 max_elected: int) -> None:
         await asyncio.sleep(time_to_request)
 
-        del self.requests_threads[thread_id]
-
         channel = self.get_channel(thread_id)
         messages = await channel.history(
             limit=self.requests_threads[thread_id]['count']
         ).flatten()
 
+        del self.requests_threads[thread_id]
+
         # Получаем те заявки, на которых стоит наибольшее количество "✅"
-        messages = sorted(messages, key=lambda item: addition.approves_count(item), reverse=True)[:max_requests]
+        messages = sorted(
+            [(addition.approves_count(msg), msg) for msg in messages],
+            key=lambda data: data[0], reverse=True
+        )[:max_requests]
 
         # Заносим в "базу" данные о текущем голосовании
-        self.requests_threads[thread_id] = {}
-        for message in messages:
-            self.requests_threads[thread_id][message.id] = {
+        self.polls[thread_id] = {}
+        for supporters_count, message in messages:
+            self.polls[thread_id][message.id] = {
                 'request': message,
-                'votes': 0
+                'votes': 0,
+                'supporters_count': supporters_count
             }
+        pprint.pprint(self.polls)
 
 
 if __name__ == '__main__':
-    load_dotenv(find_dotenv())
-
-    token = os.getenv('token')
-    approval_emoji = os.getenv('approval_emoji')
-
     bot = Democracy()
-    bot.run(token)
+    bot.run(config.token)

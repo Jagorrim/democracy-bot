@@ -6,6 +6,6 @@ import config
 def approves_count(message: nextcord.Message):
     for reaction in message.reactions:
         if reaction.emoji == config.approval_emoji:
-            return reaction.count
+            return reaction.count - 1  # одну реакцию ставит бот, так что её надо вычесть
 
     return 0
