@@ -13,7 +13,7 @@ class Democracy(nextcord.Client):
         self.create_poll = self.slash_command('create_poll', 'creating poll')(self.create_poll)
         self.vote = self.slash_command('vote', 'use it to vote')(self.vote)
 
-        self.requests_threads = {}
+        self.requests = {}
         self.polls = {}
 
     async def create_poll(self,
@@ -25,22 +25,35 @@ class Democracy(nextcord.Client):
                           max_elected: int
                           ) -> None:
         if not (role_id.isdigit() and interaction.guild.get_role(int(role_id)) is not None):
-            await interaction.send('Некорректное ID')
+            await interaction.send('Некорректное ID роли')
+            return
+
+        if interaction.channel_id in self.requests:
+            await interaction.send('Здесь уже проводится сбор заявок!')
+            return
+
+        if interaction.channel_id in self.polls:
+            await interaction.send('Здесь уже проводится голование!')
             return
 
         role_id = int(role_id)
         title = f'Приём заявок на голосование на роль {interaction.guild.get_role(role_id).mention}: '
         await interaction.send(title)
 
-        original_message = await interaction.original_message()
-        thread = await original_message.create_thread(name=title)
+        # Если канал уже является тредом, то нам не надо создавать его, просто в нём запускаем голосование
+        if isinstance(interaction.channel, nextcord.Thread):
+            thread_id = interaction.channel_id
+        else:
+            original_message = await interaction.original_message()
+            thread_id = (await original_message.create_thread(name=title)).id
 
-        self.requests_threads[thread.id] = {'count': 0,
-                                            'users': set()}
+        self.requests[thread_id] = {'count': 0,
+                                    'users': set()}
 
-        # Запускаем отдельный обработчик, который будет ждать время, отведённое на сбор заявок, а потом посчитает их
+        # Запускаем отдельный обработчик, который будет ждать время, отведённое на сбор заявок,
+        # а потом посчитает их и запустит само голосование
         await self.process_requests(
-            role_id, thread.id, time_to_request, max_requests, time_to_elect, max_elected
+            role_id, thread_id, time_to_request, max_requests, time_to_elect, max_elected
         )
 
     async def process_requests(self,
@@ -54,10 +67,10 @@ class Democracy(nextcord.Client):
 
         channel = self.get_channel(thread_id)
         messages = await channel.history(
-            limit=self.requests_threads[thread_id]['count']
+            limit=self.requests[thread_id]['count']
         ).flatten()
 
-        del self.requests_threads[thread_id]  # Заявки закрыты.
+        del self.requests[thread_id]  # Заявки закрыты.
 
         # Получаем те заявки, на которых стоит наибольшее количество (и определённое их количество) "✅"
         messages = sorted(
@@ -92,17 +105,17 @@ class Democracy(nextcord.Client):
 
     async def on_message(self, message: nextcord.Message) -> None:
         # Если в канале не проходит приём заявок
-        if message.channel.id not in self.requests_threads:
+        if message.channel.id not in self.requests:
             return
 
-        # # Если человек уже отправлял заявку
-        # if message.author.id in self.requests_threads[message.channel.id]['users']:
-        #     await message.delete()
-        #     return
+        # Если человек уже отправлял заявку
+        if message.author.id in self.requests[message.channel.id]['users']:
+            await message.delete()
+            return
 
         # Заносим заявку в "базу"
-        self.requests_threads[message.channel.id]['users'].add(message.author.id)
-        self.requests_threads[message.channel.id]['count'] += 1
+        self.requests[message.channel.id]['users'].add(message.author.id)
+        self.requests[message.channel.id]['count'] += 1
 
         await message.add_reaction(config.approval_emoji)
 
@@ -117,6 +130,13 @@ class Democracy(nextcord.Client):
 
         cur_person = 0
         requests = self.polls[interaction.channel_id]['requests']
+
+        async def click_vote(_interaction: nextcord.Interaction):
+            nonlocal cur_person
+            self.polls[interaction.channel_id]['voters'].add(_interaction.user.id)  # добавляем юзера в проголосовавших
+            self.polls[interaction.channel_id]['requests'][cur_person]['votes'] += 1  # Добавляем голос к кандидату
+
+            await _interaction.message.edit(embed=None, content='Вы проголосовали!', view=None)
 
         async def click_get_prev(_interaction: nextcord.Interaction):
             nonlocal cur_person
@@ -134,44 +154,49 @@ class Democracy(nextcord.Client):
 
         async def update_embed(_interaction: nextcord.Interaction):
             nonlocal cur_person
-            _embed = nextcord.Embed(
-                title=requests[cur_person]['request'].author.name,  # Сюда мы вставляем текст с заявки
+            embed = nextcord.Embed(
+                title=requests[cur_person]['request'].author.global_name,  # Сюда мы вставляем текст с заявки
                 description=requests[cur_person]['request'].content  # Текст заявки
             )
 
-            _embed.set_thumbnail(url=requests[cur_person]['request'].author.avatar)
-            _embed.set_footer(text=requests[cur_person]['supporters_count'])  # Количество подписей за кандидата
-            await _interaction.message.edit(embed=_embed)
+            embed.set_thumbnail(url=requests[cur_person]['request'].author.avatar)
+            embed.set_footer(text=requests[cur_person]['supporters_count'])  # Количество подписей за кандидата
+            await _interaction.message.edit(embed=embed)
 
-        get_prev = nextcord.ui.Button(
+        # Кнопка левого кандидата (в смысле промотать в левую сторону)
+        btn_get_prev = nextcord.ui.Button(
             style=nextcord.ButtonStyle.gray,
             label="<-",
             custom_id="get_prev",  # кастом айди для подальшего взаимодействия с сообщением через него
         )
-        get_prev.callback = click_get_prev
-        vote = nextcord.ui.Button(
+        btn_get_prev.callback = click_get_prev
+        # Кнопка голосования
+        btn_vote = nextcord.ui.Button(
             style=nextcord.ButtonStyle.blurple,
             label="+",
             custom_id="vote"  # Сохраняем плюсом айди чтобы по два раза не голосовали
         )
-        get_next = nextcord.ui.Button(
+        # Кнопка правого кандидата (да, тоже промотать)
+        btn_vote.callback = click_vote
+        btn_get_next = nextcord.ui.Button(
             style=nextcord.ButtonStyle.gray,
             label="->",
             custom_id="get_next",
         )
-        get_next.callback = click_get_next
+        btn_get_next.callback = click_get_next
 
         embed = nextcord.Embed(
-            title=requests[cur_person]['request'].author.name,  # Сюда мы вставляем текст с заявки
+            title=requests[cur_person]['request'].author.global_name,  # Имя
+            # (я без понятия, почему имя на сервере называется global_name)
             description=requests[cur_person]['request'].content  # Текст заявки
         )
         embed.set_thumbnail(url=requests[cur_person]['request'].author.avatar)
         embed.set_footer(text=requests[cur_person]['supporters_count'])  # Количество подписей за кандидата
 
         view = nextcord.ui.View()
-        view.add_item(get_prev)
-        view.add_item(vote)
-        view.add_item(get_next)
+        view.add_item(btn_get_prev)
+        view.add_item(btn_vote)
+        view.add_item(btn_get_next)
 
         await interaction.user.send(embed=embed, view=view)
         await interaction.send('Отправили бланки!', ephemeral=True)
