@@ -70,7 +70,7 @@ class Democracy(nextcord.Client):
             limit=self.requests[thread_id]['count']
         ).flatten()
 
-        del self.requests[thread_id]  # Заявки закрыты.
+        del self.requests[thread_id]  # Закрываем заявки в данном канале
 
         # Получаем те заявки, на которых стоит наибольшее количество (и определённое их количество) "✅"
         messages = sorted(
@@ -100,8 +100,34 @@ class Democracy(nextcord.Client):
                              thread_id: int,
                              time_to_elect: int,
                              max_elected: int
-                             ):
-        pass
+                             ) -> None:
+
+        await asyncio.sleep(time_to_elect)  # Ждём пока люди наголосуются
+
+        # Получаем те заявки, за которые голосовало больше всего людей
+        # (с ограничением количества заявок в размере max_elected)
+        most_voting_requests = sorted(
+            self.polls[thread_id]['requests'], key=lambda item: item['votes'], reverse=True
+        )[:max_elected]
+
+        thread = self.get_channel(thread_id)
+        role = thread.guild.get_role(role_id)
+
+        users_mentions = []
+
+        for request in most_voting_requests:
+            msg: nextcord.Message = request['request']
+            await msg.author.add_roles(role)
+            users_mentions.append(msg.author.mention)
+
+        users_mentions = '\n'.join(users_mentions)
+
+        text = f'Роль {role.mention} выдана следующим людям:\n{users_mentions}'
+        embed = nextcord.Embed(title='Голосование окончено!', description=text)
+
+        del self.polls[thread_id]
+
+        await thread.send(embed=embed)
 
     async def on_message(self, message: nextcord.Message) -> None:
         # Если в канале не проходит приём заявок
